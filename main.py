@@ -106,14 +106,17 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 SYSTEM_PROMPT = (
     "אתה מתרגם הוראות בשפה טבעית לפקודות CLI מתאימות ל-Windows (cmd/powershell).\n"
-    "entialAction כך:\n"
+    "פעל כך:\n"
     "- החזר רק את פקודת ה-CLI המדוייקת בלבד, בלי הסברים, בלי backticks, בלי טקסט נוסף.\n"
-    "- אם הבקשה לא ניתנת להמרה או מסוכנת (כמו פקודות שמוחקות כוננים שלמים), אחזר בדיוק: UNABLE_TO_PARSE\n"
+    "- אם הבקשה לא ניתנת להמרה או מסוכנת (כמו פקודות שמוחקות כוננים שלמים), החזר בדיוק: UNABLE_TO_PARSE\n"
     "- השתמש בתחביר של cmd/powershell של Windows (לדוגמה: dir, del, ipconfig, tasklist וכו').\n"
 )
 
 LOG_CSV = os.path.join(os.path.dirname(__file__), "results.csv")
 HISTORY_JSON = os.path.join(os.path.dirname(__file__), "test_history.json")
+SUMMARY_CSV = os.path.join(os.path.dirname(__file__), "test_summary.csv")
+
+current_system_prompt = SYSTEM_PROMPT
 
 
 def load_history():
@@ -139,7 +142,37 @@ def save_history(history):
 def reset_history():
     """מאפס את ההיסטוריה"""
     save_history([])
-    return "ההיסטוריה אופסה בהצלחה!", None
+    return "ההיסטוריה אופסה בהצלחה!", None, None
+
+
+def save_summary_to_csv(timestamp, system_prompt, complexity_level, total_tests, passed_tests, failed_tests, 
+                        success_rate, avg_format, avg_syntax, avg_security, avg_overall):
+    """שומר סיכום של ריצת בדיקה לקובץ CSV נפרד"""
+    file_exists = os.path.exists(SUMMARY_CSV)
+    
+    try:
+        with open(SUMMARY_CSV, 'a', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            
+            # כתוב כותרות רק אם הקובץ חדש
+            if not file_exists:
+                writer.writerow([
+                    'תאריך_ושעה', 'system_prompt', 'רמת_מורכבות', 
+                    'סך_פקודות_נבדקו', 'פקודות_הצליחו', 'פקודות_נכשלו',
+                    'אחוז_הצלחה', 'אחוז_כשלון',
+                    'ממוצע_פורמט', 'ממוצע_תחביר', 'ממוצע_אבטחה', 'ממוצע_כולל'
+                ])
+            
+            # כתוב את הנתונים
+            writer.writerow([
+                timestamp, system_prompt, complexity_level,
+                total_tests, passed_tests, failed_tests,
+                f"{success_rate:.2f}%", f"{100-success_rate:.2f}%",
+                f"{avg_format:.2f}", f"{avg_syntax:.2f}", 
+                f"{avg_security:.2f}", f"{avg_overall:.2f}"
+            ])
+    except Exception as e:
+        print(f"שגיאה בשמירת סיכום: {e}")
 
 
 def update_test_cases(input_text: str, agent_output: str):
@@ -149,7 +182,6 @@ def update_test_cases(input_text: str, agent_output: str):
         df = pd.read_csv(csv_path)
     except Exception:
         return
-    # חפש את השורה המתאימה
     mask = df["input"] == input_text
     if mask.any():
         expected = df.loc[mask, "expected_output"].values[0]
@@ -164,7 +196,7 @@ def generate_command(user_text: str, custom_prompt: str = None) -> str:
     if not user_text or not user_text.strip():
         return "UNABLE_TO_PARSE"
 
-    prompt_to_use = custom_prompt if custom_prompt else SYSTEM_PROMPT
+    prompt_to_use = custom_prompt if custom_prompt else current_system_prompt
     
     messages = [
         {"role": "system", "content": prompt_to_use},
@@ -181,11 +213,11 @@ def generate_command(user_text: str, custom_prompt: str = None) -> str:
         )
         cmd = resp.choices[0].message.content.strip()
         
-        if "\`\`\`" in cmd:
+        if "```" in cmd:
             lines = cmd.split("\n")
             cleaned_lines = []
             for line in lines:
-                if not line.strip().startswith("\`\`\`"):
+                if not line.strip().startswith("```"):
                     cleaned_lines.append(line)
             cmd = "\n".join(cleaned_lines).strip()
             
@@ -193,7 +225,6 @@ def generate_command(user_text: str, custom_prompt: str = None) -> str:
         print(f"[v0] Error calling OpenAI API: {e}")
         cmd = "UNABLE_TO_PARSE"
 
-    # רישום פשוט
     try:
         with open(LOG_CSV, "a", newline='', encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -201,26 +232,19 @@ def generate_command(user_text: str, custom_prompt: str = None) -> str:
     except Exception:
         pass
 
-    # עדכון test_cases.csv
     update_test_cases(user_text, cmd)
 
     return cmd
 
 
 def evaluate_output_metrics(agent_output: str, expected_output: str, input_text: str) -> dict:
-    """
-    מעריך את הפלט לפי מדדי איכות שונים:
-    1. פורמט פלט עקבי - שורת פקודה אחת בלבד, ללא טקסט נוסף
-    2. תקינות תחבירית - הפקודה נראית חוקית
-    3. אבטחה ובטיחות - האם הפקודה מסוכנת
-    """
+    """מעריך את הפלט לפי מדדי איכות שונים"""
     metrics = {}
     
-    # בדיקה שהפלט הוא שורה אחת בלבד ללא הסברים
     lines = agent_output.strip().split('\n')
     has_single_line = len(lines) == 1
     has_no_explanation = not any(word in agent_output.lower() for word in ['זהו', 'כלומר', 'זאת אומרת', 'this', 'command', 'here'])
-    has_no_backticks = '\`\`\`' not in agent_output
+    has_no_backticks = '```' not in agent_output
     
     format_score = 100 if (has_single_line and has_no_explanation and has_no_backticks) else 0
     if not has_single_line:
@@ -231,18 +255,13 @@ def evaluate_output_metrics(agent_output: str, expected_output: str, input_text:
     metrics['פורמט_פלט'] = format_score
     metrics['פורמט_הערות'] = 'תקין' if format_score == 100 else 'יש טקסט נוסף/שורות מרובות'
     
-    # בדיקה שהפקודה נראית כמו פקודת Windows חוקית
     syntax_valid = True
     syntax_notes = []
     
     if agent_output == "UNABLE_TO_PARSE":
-        syntax_valid = True  # זה תקין - זיהוי שלא ניתן לתרגם
+        syntax_valid = True
         syntax_notes.append("זוהה כבלתי ניתן לתרגום")
     else:
-        # בדיקת תווים לא חוקיים
-        invalid_chars = ['<', '>', '|', '&'] if agent_output.count('|') > 2 or agent_output.count('&') > 2 else []
-        
-        # בדיקה שיש פקודה ידועה בתחילת השורה
         known_commands = [
             'dir', 'cd', 'copy', 'move', 'del', 'ren', 'rename', 'mkdir', 'rmdir',
             'ipconfig', 'ping', 'netstat', 'tasklist', 'taskkill', 'systeminfo',
@@ -262,7 +281,6 @@ def evaluate_output_metrics(agent_output: str, expected_output: str, input_text:
     metrics['תקינות_תחבירית'] = syntax_score
     metrics['תחביר_הערות'] = '; '.join(syntax_notes) if syntax_notes else 'תקין'
     
-    # רשימת פקודות מסוכנות ופקודות שדורשות אישור
     dangerous_commands = ['format', 'del /f /s /q', 'rmdir /s /q', 'rd /s /q', 'shutdown /s', 'wmic', 'diskpart']
     risky_commands = ['del', 'rmdir', 'rd', 'shutdown', 'taskkill /f']
     
@@ -272,7 +290,6 @@ def evaluate_output_metrics(agent_output: str, expected_output: str, input_text:
     
     output_lower = agent_output.lower()
     
-    # בדיקת פקודות מסוכנות
     for dangerous in dangerous_commands:
         if dangerous.lower() in output_lower:
             security_level = "מסוכן"
@@ -280,7 +297,6 @@ def evaluate_output_metrics(agent_output: str, expected_output: str, input_text:
             security_notes.append(f"פקודה מסוכנת: {dangerous}")
             break
     
-    # אם לא נמצאה פקודה מסוכנת, בדוק פקודות בסיכון
     if security_level != "מסוכן":
         for risky in risky_commands:
             if risky.lower() in output_lower:
@@ -294,13 +310,12 @@ def evaluate_output_metrics(agent_output: str, expected_output: str, input_text:
     metrics['אבטחה_הערות'] = '; '.join(security_notes) if security_notes else 'בטוח'
     
     total_score = (
-        metrics['פורמט_פלט'] * 0.3 +  # 30% משקל לפורמט
-        metrics['תקינות_תחבירית'] * 0.3 +  # 30% משקל לתחביר
-        metrics['אבטחה'] * 0.4  # 40% משקל לאבטחה
+        metrics['פורמט_פלט'] * 0.3 +
+        metrics['תקינות_תחבירית'] * 0.3 +
+        metrics['אבטחה'] * 0.4
     )
     metrics['ציון_כולל'] = round(total_score, 2)
     
-    # התאמה confiscated (הציון המקורי)
     is_correct = agent_output.strip() == str(expected_output).strip()
     metrics['התאמה_לצפוי'] = "תקין" if is_correct else "שגוי"
     
@@ -314,7 +329,7 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
-        return f"שגיאה בטעינת קובץ הבדיקות: {str(e)}", None, None
+        return f"שגיאה בטעינת קובץ הבדיקות: {str(e)}", None, None, pd.DataFrame()
     
     if complexity_level == "פשוט":
         df = df[df['complexity'] == 'פשוט']
@@ -323,7 +338,7 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
     elif complexity_level == "מורכב":
         df = df[df['complexity'] == 'מורכב']
     
-    prompt_to_use = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else SYSTEM_PROMPT
+    prompt_to_use = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else current_system_prompt
     
     results = []
     total_tests = len(df)
@@ -354,8 +369,8 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
         results.append({
             "מספר": idx + 1,
             "קלט": input_text,
-            "פלט צפוי": expected_output,
-            "פלט שהתקבל": agent_output,
+            "פלט_צפוי": expected_output,
+            "פלט_שהתקבל": agent_output,
             "התאמה": metrics['התאמה_לצפוי'],
             "ציון_פורמט": metrics['פורמט_פלט'],
             "ציון_תחביר": metrics['תקינות_תחבירית'],
@@ -371,9 +386,15 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
     avg_security = total_security_score / total_tests if total_tests > 0 else 0
     avg_overall = total_overall_score / total_tests if total_tests > 0 else 0
     
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    save_summary_to_csv(timestamp, prompt_to_use, complexity_level, total_tests, 
+                       passed_tests, total_tests - passed_tests, success_rate,
+                       avg_format, avg_syntax, avg_security, avg_overall)
+    
     history = load_history()
     test_run = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": timestamp,
         "system_prompt": prompt_to_use,
         "complexity_level": complexity_level,
         "total_tests": total_tests,
@@ -389,11 +410,13 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
     history.append(test_run)
     save_history(history)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_filename = f"test_results_{timestamp}.csv"
+    timestamp_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_filename = f"test_results_{timestamp_file}.csv"
     results_path = os.path.join(os.path.dirname(__file__), results_filename)
     
     results_df = pd.DataFrame(results)
+    results_df.insert(0, 'system_prompt', prompt_to_use)
+    results_df.insert(1, 'רמת_מורכבות', complexity_level)
     results_df.to_csv(results_path, index=False, encoding='utf-8-sig')
     
     summary = f"""
@@ -418,7 +441,7 @@ def run_automated_tests(custom_prompt: str, complexity_level: str):
 קובץ התוצאות נשמר ב: `{results_filename}`
 """
     
-    return summary, results_path, load_history_display()
+    return summary, results_path, load_history_display(), results_df
 
 
 def download_full_history():
@@ -451,8 +474,8 @@ def download_full_history():
                 'ממוצע_אבטחה': avg_security,
                 'ממוצע_כולל': avg_overall,
                 'קלט': result.get('קלט', ''),
-                'פלט_צפוי': result.get('פלט צפוי', ''),
-                'פלט_שהתקבל': result.get('פלט שהתקבל', ''),
+                'פלט_צפוי': result.get('פלט_צפוי', ''),
+                'פלט_שהתקבל': result.get('פלט_שהתקבל', ''),
                 'התאמה': result.get('התאמה', ''),
                 'ציון_פורמט': result.get('ציון_פורמט', 0),
                 'ציון_תחביר': result.get('ציון_תחביר', 0),
@@ -476,6 +499,13 @@ def download_full_history():
     return history_path
 
 
+def download_summary_file():
+    """מחזיר את קובץ הסיכומים להורדה"""
+    if os.path.exists(SUMMARY_CSV):
+        return SUMMARY_CSV
+    return None
+
+
 def load_history_display():
     """מציג את ההיסטוריה בפורמט קריא"""
     history = load_history()
@@ -487,7 +517,7 @@ def load_history_display():
     
     for i, run in enumerate(history, 1):
         display_text += f"## ריצה #{i} - {run.get('timestamp', 'N/A')}\n\n"
-        display_text += f"**System Prompt:**\n\`\`\`\n{run.get('system_prompt', 'N/A')[:200]}...\n\`\`\`\n\n"
+        display_text += f"**System Prompt:**\n```\n{run.get('system_prompt', 'N/A')[:200]}...\n```\n\n"
         display_text += f"**רמת מורכבות:** {run.get('complexity_level', 'N/A')}\n"
         display_text += f"**אחוז הצלחה:** {run.get('success_rate', 0):.2f}%\n"
         display_text += f"**ציון פורמט:** {run.get('avg_format_score', 0):.2f}\n"
@@ -497,6 +527,13 @@ def load_history_display():
         display_text += "---\n\n"
     
     return display_text
+
+
+def save_system_prompt(prompt_text):
+    """שומר את ה-System Prompt החדש"""
+    global current_system_prompt
+    current_system_prompt = prompt_text
+    return "✅ System Prompt נשמר בהצלחה! ישמש בכל הבדיקות הבאות."
 
 
 with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as demo:
@@ -530,7 +567,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
         
         with gr.Tab("ניהול System Prompt"):
             gr.Markdown("### ערוך את ה-System Prompt")
-            gr.Markdown("כאן תוכל לשנות את ההוראות שה-AI מקבל. השינויים ישמרו לכל הבדיקות הבאות.")
+            gr.Markdown("כאן תוכל לשנות את ההוראות שה-AI מקבל. לחץ על 'שמור' כדי להשתמש ב-Prompt החדש.")
             
             custom_prompt = gr.Textbox(
                 label="System Prompt",
@@ -540,11 +577,21 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
             )
             
             with gr.Row():
+                save_prompt_btn = gr.Button("שמור System Prompt", variant="primary")
                 reset_prompt_btn = gr.Button("אפס לברירת מחדל")
-                save_prompt_status = gr.Markdown("")
+            
+            save_prompt_status = gr.Markdown("")
             
             def reset_to_default():
+                global current_system_prompt
+                current_system_prompt = SYSTEM_PROMPT
                 return SYSTEM_PROMPT, "✅ System Prompt אופס לברירת מחדל"
+            
+            save_prompt_btn.click(
+                fn=save_system_prompt,
+                inputs=[custom_prompt],
+                outputs=[save_prompt_status]
+            )
             
             reset_prompt_btn.click(
                 fn=reset_to_default,
@@ -564,6 +611,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
                 run_tests_btn = gr.Button("הרץ בדיקות", variant="primary", size="lg")
             
             test_summary = gr.Markdown("הריצה תתחיל כשתלחץ על הכפתור...")
+            
+            gr.Markdown("### תוצאות מפורטות")
+            results_table = gr.Dataframe(
+                headers=["מספר", "קלט", "פלט_צפוי", "פלט_שהתקבל", "התאמה", 
+                        "ציון_פורמט", "ציון_תחביר", "ציון_אבטחה", "ציון_כולל", 
+                        "רמת_סיכון", "הערות"],
+                label="תוצאות הבדיקות",
+                interactive=False
+            )
+            
             download_results_file = gr.File(label="הורד קובץ תוצאות CSV")
         
         with gr.Tab("היסטוריה ומעקב"):
@@ -575,21 +632,23 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
             with gr.Row():
                 refresh_history_btn = gr.Button("רענן היסטוריה", size="sm")
                 download_history_btn = gr.Button("הורד היסטוריה מלאה (CSV)", variant="primary")
+                download_summary_btn = gr.Button("הורד קובץ סיכומים (CSV)", variant="secondary")
                 reset_history_btn = gr.Button("אפס היסטוריה", variant="stop")
             
             download_history_file = gr.File(label="הורד קובץ היסטוריה CSV")
+            download_summary_file_output = gr.File(label="הורד קובץ סיכומים CSV")
             reset_status = gr.Markdown("")
     
     convert_btn.click(
-        fn=lambda text, prompt: generate_command(text, prompt if prompt.strip() else None),
-        inputs=[user_input, custom_prompt],
+        fn=lambda text: generate_command(text, current_system_prompt),
+        inputs=[user_input],
         outputs=output
     )
     
     run_tests_btn.click(
-        fn=run_automated_tests,
+        fn=lambda prompt, level: run_automated_tests(prompt, level),
         inputs=[custom_prompt, complexity_dropdown],
-        outputs=[test_summary, download_results_file, history_display]
+        outputs=[test_summary, download_results_file, history_display, results_table]
     )
     
     refresh_history_btn.click(
@@ -602,15 +661,17 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
         outputs=download_history_file
     )
     
-    reset_history_btn.click(
-        fn=reset_history,
-        outputs=[reset_status, download_history_file]
+    download_summary_btn.click(
+        fn=download_summary_file,
+        outputs=download_summary_file_output
     )
     
-    # טען היסטוריה בעת פתיחת האפליקציה
+    reset_history_btn.click(
+        fn=reset_history,
+        outputs=[reset_status, download_history_file, download_summary_file_output]
+    )
+    
     demo.load(fn=load_history_display, outputs=history_display)
 
-
-if __name__ == '__main__':
-    port = int(os.getenv("PORT", 8080))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+if __name__ == "__main__":
+    demo.launch()
