@@ -45,8 +45,7 @@ def generate_command(user_text: str) -> str:
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"הוראה: {user_text}\n
-החזר רק את פקודת ה-CLI המתאימה."},
+        {"role": "user", "content": f"הוראה: {user_text}\nהחזר רק את פקודת ה-CLI המתאימה."},
     ]
 
     try:
