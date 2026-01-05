@@ -341,7 +341,7 @@ def show_history_summary():
             "ריצה #": idx,
             "תאריך ושעה": run['timestamp'],
             "רמת מורכבות": run['complexity_level'],
-            "סה"כ בדיקות": run['total_tests'],
+            "סה\"כ בדיקות": run['total_tests'],
             "בדיקות תקינות": run['passed_tests'],
             "אחוז הצלחה": f"{run['success_rate']}%",
             "System Prompt (100 תווים ראשונים)": run['system_prompt'][:100] + "..."
