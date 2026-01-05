@@ -50,7 +50,7 @@ def generate_command(user_text: str) -> str:
 
     try:
         resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=messages,
             temperature=0.0,
             max_tokens=150,
@@ -88,4 +88,5 @@ with gr.Blocks() as demo:
 
 
 if __name__ == '__main__':
-    demo.launch()
+    port = int(os.getenv("PORT", 8080))
+    demo.launch(server_name="0.0.0.0", server_port=port)
