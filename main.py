@@ -672,6 +672,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="מחולל פקודות CLI") as d
     )
     
     demo.load(fn=load_history_display, outputs=history_display)
-
-if __name__ == "__main__":
-    demo.launch()
+if __name__ == '__main__':
+    port = int(os.getenv("PORT", 8080))
+    demo.launch(server_name="0.0.0.0", server_port=port)
