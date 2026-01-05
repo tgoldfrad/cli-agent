@@ -1,0 +1,12 @@
+[project]
+name = "prompt-engineering-cli"
+version = "0.1.0"
+description = "Agent שממיר הוראות בשפה טבעית לפקודות CLI ב-Windows"
+authors = ["Your Name <your@email.com>"]
+requires-python = ">=3.8"
+dependencies = [
+    "gradio",
+    "openai",
+    "python-dotenv",
+    "pandas"
+]
