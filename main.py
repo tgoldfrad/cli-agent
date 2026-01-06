@@ -209,7 +209,7 @@ def generate_command(user_text: str, custom_prompt: str = None) -> str:
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.0,
-            max_tokens=150,
+            max_tokens=500,
         )
         cmd = resp.choices[0].message.content.strip()
         
